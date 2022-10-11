@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/big"
 	"os"
-	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -25,25 +24,8 @@ type LogTransfer struct {
 
 func trackingNativeTokens() {
 	godotenv.Load()
-
-}
-
-func trackingERC20Tokens() {
-	godotenv.Load()
-}
-
-func main() {
-	err := godotenv.Load()
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	// userAddress := os.Getenv("USER_ADDRESS")
-
-	// dung trong config .env: token bot, user address, rpc, blockstart
 	botApi := os.Getenv("BOTAPI")
 	rpc := os.Getenv("RPC")
-	contractAddr := os.Getenv("CONTRACTADDR")
 	bot, err := tgbotapi.NewBotAPI(botApi)
 	if err != nil {
 		fmt.Println(err)
@@ -79,36 +61,64 @@ func main() {
 			continue
 		}
 
-		for id, transaction := range block.Transactions() {
+		for _, transaction := range block.Transactions() {
 			// if transaction.To().Hex() == userAddress {
 			if transaction.To() != nil && len(transaction.Data()) < 1 {
 				// len(data) < 1 --> transfer native tokens --> check to for notify
 				//find address from
 				var from common.Address
 				if m, err := transaction.AsMessage(types.NewEIP155Signer(chainID), nil); err == nil {
-					fmt.Println("native token from", m.From().Hex())
+					// fmt.Println("native token from", m.From().Hex())
 					from = m.From()
 				}
-				fmt.Println("---------------------------")
-				fmt.Println("native token hex", transaction.Hash().Hex())
-				fmt.Println("native token value", transaction.Value().String())
-				fmt.Println("native token to", transaction.To().Hex())
-				fmt.Println("native token", id)
-				n := fmt.Sprintf("ERC20: \nfrom: %s\nto: %s\nvalue: %s", from.Hex(), transaction.To().Hex(), transaction.Value().String())
+				// fmt.Println("---------------------------")
+				// fmt.Println("native token hex", transaction.Hash().Hex())
+				// fmt.Println("native token value", transaction.Value().String())
+				// fmt.Println("native token to", transaction.To().Hex())
+				// fmt.Println("native token", id)
+				n := fmt.Sprintf("Native: \nfrom: %s\nto: %s\nvalue: %s", from.Hex(), transaction.To().Hex(), transaction.Value().String())
+				fmt.Println(n)
 				msg := tgbotapi.NewMessage(1262995839, n)
 				bot.Send(msg)
 			}
 		}
-		if i.Int64() == number-1 {
-			time.Sleep(5 * time.Second)
-			number++
-		}
+		// if i.Int64() == number-1 {
+		// 	time.Sleep(5 * time.Second)
+		// 	number++
+		// }
 	}
-	//contract address of ERC20 token that you want to track txs
+}
+
+func trackingERC20Tokens() {
+	godotenv.Load()
+	botApi := os.Getenv("BOTAPI")
+	rpc := os.Getenv("RPC")
+	contractAddr := os.Getenv("CONTRACTADDR")
+	bot, err := tgbotapi.NewBotAPI(botApi)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	client, err := ethclient.Dial(rpc)
+	//this rpc is for BNB smart chain test net, if you want to track ETH, please change RPC
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	header, err := client.HeaderByNumber(context.Background(), nil)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	number := header.Number.Int64()
+	number = 23569514 + 1
+	blockNumberStart := big.NewInt(23569514)
 	contractAddress := common.HexToAddress(contractAddr)
 	query := ethereum.FilterQuery{
 		FromBlock: blockNumberStart,
-		ToBlock:   big.NewInt(number),
+		ToBlock:   big.NewInt(number + 100),
 		Addresses: []common.Address{
 			contractAddress,
 		},
@@ -138,10 +148,14 @@ func main() {
 			bot.Send(msg)
 		}
 
-		if vLog.BlockNumber == query.ToBlock.Uint64() {
-			time.Sleep(5 * time.Second)
-			query.FromBlock = big.NewInt(int64(vLog.BlockNumber + 1))
-		}
+		// if vLog.BlockNumber == query.ToBlock.Uint64() {
+		// 	time.Sleep(5 * time.Second)
+		// 	query.FromBlock = big.NewInt(int64(vLog.BlockNumber + 1))
+		// }
 	}
+}
 
+func main() {
+	go trackingNativeTokens()
+	go trackingERC20Tokens()
 }
