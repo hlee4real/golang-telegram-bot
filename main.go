@@ -20,10 +20,10 @@ import (
 )
 
 type LogTransfer struct {
-	From   common.Address
-	To     common.Address
-	Value  *big.Int
-	Symbol string
+	From  common.Address
+	To    common.Address
+	Value *big.Int
+	Hash  common.Hash
 }
 
 func init() {
@@ -36,17 +36,13 @@ func parseInt(data string) int64 {
 }
 
 func trackingNativeTokens() {
-	userAddress := os.Getenv("USERADDRESS")
 	blockNumberStart := parseInt(os.Getenv("NUMBER"))
-	botApi := os.Getenv("BOTAPI")
-	rpc := os.Getenv("RPC")
-	bot, err := tgbotapi.NewBotAPI(botApi)
+	bot, err := tgbotapi.NewBotAPI(os.Getenv("BOTAPI"))
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-
-	client, err := ethclient.Dial(rpc)
+	client, err := ethclient.Dial(os.Getenv("RPC"))
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -56,9 +52,7 @@ func trackingNativeTokens() {
 		fmt.Println(err)
 		return
 	}
-
 	number := header.Number.Int64()
-
 	chainID, err := client.NetworkID(context.Background())
 	if err != nil {
 		fmt.Println(err)
@@ -70,10 +64,8 @@ func trackingNativeTokens() {
 			fmt.Println(err)
 			continue
 		}
-
 		for _, transaction := range block.Transactions() {
-			// if transaction.To().Hex() == userAddress {
-			if transaction.To() != nil && len(transaction.Data()) < 1 && transaction.To().Hex() == userAddress {
+			if transaction.To() != nil && len(transaction.Data()) < 1 && transaction.To().Hex() == os.Getenv("USERADDRESS") {
 				// len(data) < 1 --> transfer native tokens --> check to for notify
 				//find address from
 				var from common.Address
@@ -81,7 +73,7 @@ func trackingNativeTokens() {
 					// fmt.Println("native token from", m.From().Hex())
 					from = message.From()
 				}
-				content := fmt.Sprintf("Native: \nfrom: %s\nto: %s\nvalue: %s", from.Hex(), transaction.To().Hex(), transaction.Value().String())
+				content := fmt.Sprintf("Native: \nfrom: %s\nto: %s\nvalue: %s\nhash: %s", from.Hex(), transaction.To().Hex(), transaction.Value().String(), transaction.Hash())
 				bot.Send(tgbotapi.NewMessage(1262995839, content))
 			}
 		}
@@ -95,62 +87,73 @@ func trackingNativeTokens() {
 
 func trackingERC20Tokens() {
 	blockNumberStart := parseInt(os.Getenv("NUMBER"))
-	botApi := os.Getenv("BOTAPI")
-	rpc := os.Getenv("RPC")
-	contractAddr := os.Getenv("CONTRACTADDR")
-	bot, err := tgbotapi.NewBotAPI(botApi)
+	bot, err := tgbotapi.NewBotAPI(os.Getenv("BOTAPI"))
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-
-	client, err := ethclient.Dial(rpc)
+	client, err := ethclient.Dial(os.Getenv("RPC"))
 	//this rpc is for BNB smart chain test net, if you want to track ETH, please change RPC
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	header, err := client.HeaderByNumber(context.Background(), nil)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
+	contractAddress := common.HexToAddress(os.Getenv("CONTRACTADDR"))
+	fromBlock := big.NewInt(blockNumberStart)
+	toBlock := fromBlock.Sub(fromBlock, big.NewInt(1))
 
-	number := header.Number.Int64()
-	contractAddress := common.HexToAddress(contractAddr)
-	query := ethereum.FilterQuery{
-		FromBlock: big.NewInt(blockNumberStart),
-		ToBlock:   big.NewInt(number),
-		Addresses: []common.Address{
-			contractAddress,
-		},
-	}
-	logs, err := client.FilterLogs(context.Background(), query)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	logTransferSig := []byte("Transfer(address,address,uint256)")
-	logTransferSigHash := crypto.Keccak256Hash(logTransferSig).Hex()
-
-	// defensive checking
-	for _, vLog := range logs {
-		// fmt.Println("Log Block Number: ", vLog.BlockNumber)
-		if len(vLog.Topics) > 0 && vLog.Topics[0].Hex() == logTransferSigHash {
-			var transferEvent LogTransfer
-			transferEvent.From = common.HexToAddress(vLog.Topics[1].Hex())
-			transferEvent.To = common.HexToAddress(vLog.Topics[2].Hex())
-			transferEvent.Value = new(big.Int).SetBytes(vLog.Data)
-			content := fmt.Sprintf("ERC20: \nfrom: %s\nto: %s\nvalue: %s", transferEvent.From.Hex(), transferEvent.To.Hex(), transferEvent.Value.String())
-			bot.Send(tgbotapi.NewMessage(1262995839, content))
+	for {
+		header, err := client.HeaderByNumber(context.Background(), nil)
+		if err != nil {
+			fmt.Println("Get header error and sleep 20 seconds:", err)
+			time.Sleep(time.Second * 20)
+			continue
 		}
+		//make sure from = from because from is sub before for loop start
+		//then make to = current block by getting it from header
+		fromBlock = toBlock.Add(toBlock, big.NewInt(1))
+		toBlock = header.Number
+		if toBlock.Cmp(fromBlock) == -1 {
+			toBlock = fromBlock
+		}
+
+		fmt.Printf("Filter logs from %d to %d\n", fromBlock.Int64(), toBlock.Int64())
+		query := ethereum.FilterQuery{
+			FromBlock: fromBlock,
+			ToBlock:   toBlock,
+			Addresses: []common.Address{
+				contractAddress,
+			},
+		}
+		logs, err := client.FilterLogs(context.Background(), query)
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+
+		logTransferSig := []byte("Transfer(address,address,uint256)")
+		logTransferSigHash := crypto.Keccak256Hash(logTransferSig).Hex()
+		// defensive checking
+		for _, vLog := range logs {
+			// fmt.Println("Log Block Number: ", vLog.BlockNumber)
+			if len(vLog.Topics) > 0 && vLog.Topics[0].Hex() == logTransferSigHash {
+				var transferEvent LogTransfer
+				transferEvent.From = common.HexToAddress(vLog.Topics[1].Hex())
+				transferEvent.To = common.HexToAddress(vLog.Topics[2].Hex())
+				transferEvent.Value = new(big.Int).SetBytes(vLog.Data)
+				transferEvent.Hash = vLog.TxHash
+				content := fmt.Sprintf("ERC20: \nfrom: %s\nto: %s\nvalue: %s \nhash: %s", transferEvent.From.Hex(), transferEvent.To.Hex(), transferEvent.Value.String(), transferEvent.Hash.Hex())
+				bot.Send(tgbotapi.NewMessage(1262995839, content))
+			}
+		}
+
+		time.Sleep(time.Second * 20)
 	}
 }
 
 func main() {
 	go trackingNativeTokens()
 	go trackingERC20Tokens()
-
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	done := make(chan bool, 1)
